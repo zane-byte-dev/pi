@@ -29,6 +29,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
+import { MAX_PROVIDER_ERROR_BODY_CHARS, truncateErrorText } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.ts";
@@ -424,6 +425,82 @@ async function* iterateSseMessages(
 	}
 }
 
+/**
+ * Guard for `.asResponse()`, which skips the SDK's status/body error handling.
+ * If the response is not a 2xx SSE stream, drain the body and throw a
+ * descriptive error so the upstream catch surfaces it instead of treating the
+ * failed response as a silent empty success.
+ */
+async function rejectNonStreamResponse(response: Response, signal?: AbortSignal): Promise<void> {
+	const contentType = response.headers.get("content-type") ?? "";
+	const isSse = contentType.includes("text/event-stream");
+	if (response.ok && isSse) return;
+
+	const bodyText = await drainBody(response, signal);
+	const body = truncateErrorText(bodyText.trim(), MAX_PROVIDER_ERROR_BODY_CHARS);
+	const reason = !response.ok ? `HTTP ${response.status}` : `unexpected content-type "${contentType || "<missing>"}"`;
+	throw new Error(body ? `Anthropic API error (${reason}): ${body}` : `Anthropic API error (${reason}: no body)`);
+}
+
+async function drainBody(response: Response, signal?: AbortSignal): Promise<string> {
+	try {
+		return await response.text();
+	} catch {
+		// Fall back to manual read if `text()` rejects (e.g. body already locked).
+		const reader = response.body?.getReader();
+		if (!reader) return "";
+		const decoder = new TextDecoder();
+		let out = "";
+		try {
+			while (true) {
+				if (signal?.aborted) throw new Error("Request was aborted");
+				const { value, done } = await reader.read();
+				if (done) break;
+				out += decoder.decode(value, { stream: true });
+			}
+			out += decoder.decode();
+			return out;
+		} finally {
+			reader.releaseLock();
+		}
+	}
+}
+
+/** Cap on how many non-message SSE events we capture for the no-`message_start` error. */
+const SEEN_EVENTS_CAP = 8;
+
+/** Format a captured SSE event for inclusion in a diagnostic error string. */
+function formatSeenEvent(sse: { event: string | null; data: string }): string {
+	const label = sse.event ?? "<no-event>";
+	const data = truncateErrorText(sse.data, 400);
+	return data ? `${label}: ${data}` : label;
+}
+
+/**
+ * Inspect an SSE message whose `event` field is missing or unknown and return a
+ * descriptive error string if its `data` carries a JSON error payload (e.g. a
+ * proxy that emits `data: {"type":"error","error":{...}}` without an `event:`
+ * line). Returns `undefined` for non-error payloads (keepalives, `[DONE]`).
+ */
+function extractStreamErrorMessage(sse: { event: string | null; data: string }): string | undefined {
+	if (!sse.data || sse.data === "[DONE]") return undefined;
+	try {
+		const parsed = JSON.parse(sse.data) as {
+			type?: string;
+			error?: { message?: string; type?: string; code?: string } | string;
+			message?: string;
+		};
+		if (parsed.type !== "error" && !parsed.error && !parsed.message) return undefined;
+		const err = parsed.error;
+		const detail = typeof err === "string" ? err : err?.message;
+		const kind = typeof err === "object" && err ? err.type || err.code : undefined;
+		const msg = detail || parsed.message || sse.data;
+		return kind ? `${msg} (${kind})` : msg;
+	} catch {
+		return undefined;
+	}
+}
+
 async function* iterateAnthropicEvents(
 	response: Response,
 	signal?: AbortSignal,
@@ -432,15 +509,39 @@ async function* iterateAnthropicEvents(
 		throw new Error("Attempted to iterate over an Anthropic response with no body");
 	}
 
+	// `.asResponse()` bypasses the SDK's parseResponse/error-checking, so a
+	// proxy/gateway may return a non-2xx status or a non-SSE body (e.g. a JSON
+	// error payload) with the raw `Response` intact. The SSE loop below cannot
+	// surface that: non-SSE lines are silently dropped and, without a
+	// `message_start`, the loop ends as a silent empty success. Drain the body
+	// up front and throw so the caller's catch surfaces a real error message.
+	await rejectNonStreamResponse(response, signal);
+
 	let sawMessageStart = false;
 	let sawMessageEnd = false;
+	// Collect non-message SSE events so a stream that never emits
+	// `message_start` (e.g. a proxy returning `event: error` or ad-hoc keepalive
+	// frames) surfaces its actual payload instead of an opaque "no message_start".
+	const seenEvents: string[] = [];
 
 	for await (const sse of iterateSseMessages(response.body, signal)) {
 		if (sse.event === "error") {
-			throw new Error(sse.data);
+			throw new Error(extractStreamErrorMessage(sse) ?? sse.data);
 		}
 
 		if (!ANTHROPIC_MESSAGE_EVENTS.has(sse.event ?? "")) {
+			// Some proxies omit the `event:` field and instead carry the error in a
+			// `data:` JSON payload (e.g. `data: {"type":"error","error":{...}}`). Throw
+			// the real message immediately so the outer retry policy sees the actual
+			// error text instead of a generic "stream ended" message (which would
+			// otherwise match the retryable "ended without" pattern).
+			const inlineError = extractStreamErrorMessage(sse);
+			if (inlineError) {
+				throw new Error(inlineError);
+			}
+			if (seenEvents.length < SEEN_EVENTS_CAP) {
+				seenEvents.push(formatSeenEvent(sse));
+			}
 			continue;
 		}
 
@@ -462,6 +563,14 @@ async function* iterateAnthropicEvents(
 
 	if (sawMessageStart && !sawMessageEnd) {
 		throw new Error("Anthropic stream ended before message_stop");
+	}
+	if (!sawMessageStart) {
+		// A 2xx SSE stream that never emitted `message_start` means the upstream
+		// sent only non-message events (e.g. gateway proxy keepalives or an
+		// `event: error` we already surfaced). Without this guard the outer loop
+		// would treat an empty body as a successful empty assistant message.
+		const detail = seenEvents.length > 0 ? `; events: ${seenEvents.join(" | ")}` : "";
+		throw new Error(`Anthropic stream ended without a message_start event${detail}`);
 	}
 }
 

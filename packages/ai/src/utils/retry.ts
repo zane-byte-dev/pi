@@ -79,6 +79,9 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"you can retry your request",
 	"try your request again",
 	"please retry your request",
+	// Bedrock occasionally returns this opaque transient failure without an
+	// HTTP status or explicit retry instruction.
+	"Bedrock is unable to process your request",
 
 	// gRPC based providers (e.g. NVIDIA NIM)
 	"ResourceExhausted",

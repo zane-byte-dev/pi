@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fixed Anthropic-compatible session-affinity routing to also send the `Session-Id` header (alongside `x-session-affinity`) from `options.sessionId` when `compat.sendSessionAffinityHeaders` is enabled. `Session-Id` is what Claude Code sends and what gateways such as Alibaba Idealab route prompt-cache affinity on; sending only `x-session-affinity` left long tool-chain sessions frequently rewriting the full cache. Measured cacheRead ratio on a six-step Idealab session rose from ~50% to ~75%.
 - Fixed OpenRouter model context windows to use the top provider's actual context length ([#6481](https://github.com/earendil-works/pi-mono/pull/6481) by [@davidbrai](https://github.com/davidbrai)).
 - Fixed Amazon Bedrock requests to use the generic `apiKey` stream option as a Bedrock bearer token.
 - Fixed retry classification for opaque Amazon Bedrock `unable to process your request` failures.

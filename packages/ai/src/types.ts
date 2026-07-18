@@ -548,10 +548,12 @@ export interface AnthropicMessagesCompat {
 	/** Whether the provider supports Anthropic long cache retention (`cache_control.ttl: "1h"`). Default: true. */
 	supportsLongCacheRetention?: boolean;
 	/**
-	 * Whether to send the `x-session-affinity` header from `options.sessionId`
-	 * when caching is enabled. Required for providers like Fireworks that use
-	 * session affinity for prompt cache routing (requests to the same replica
-	 * maximize cache hits).
+	 * Whether to send session-affinity headers (`Session-Id` and
+	 * `x-session-affinity`) from `options.sessionId` when caching is enabled.
+	 * `Session-Id` is what Claude Code sends and what Anthropic-compatible
+	 * gateways such as Alibaba Idealab route prompt-cache affinity on;
+	 * `x-session-affinity` covers Fireworks/Cloudflare-style backends. Requests
+	 * carrying the same id are routed to the same replica to maximize cache hits.
 	 * Default: false.
 	 */
 	sendSessionAffinityHeaders?: boolean;

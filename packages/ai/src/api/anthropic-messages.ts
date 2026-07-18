@@ -1001,8 +1001,13 @@ function createClient(
 	}
 
 	// API key or header-owned auth.
+	// `Session-Id` is the header Claude Code sends and that Anthropic-compatible
+	// gateways (e.g. Alibaba Idealab) route prompt-cache affinity on; `x-session-affinity`
+	// covers Fireworks/Cloudflare-style backends. Send both from the stable session id.
 	const sessionAffinityHeaders: ProviderHeaders =
-		sessionId && getAnthropicCompat(model).sendSessionAffinityHeaders ? { "x-session-affinity": sessionId } : {};
+		sessionId && getAnthropicCompat(model).sendSessionAffinityHeaders
+			? { "Session-Id": sessionId, "x-session-affinity": sessionId }
+			: {};
 	const defaultHeaders = mergeHeaders(
 		{
 			accept: "application/json",

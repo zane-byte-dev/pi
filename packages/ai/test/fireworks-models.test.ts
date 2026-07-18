@@ -201,32 +201,35 @@ function getTools(body: Record<string, unknown>): Record<string, unknown>[] {
 }
 
 describe("Fireworks Anthropic session affinity and tool compat", () => {
-	it("sends x-session-affinity header for Fireworks models", async () => {
+	it("sends Session-Id and x-session-affinity headers for Fireworks models", async () => {
 		const model = createFireworksModel();
 		// Need a real port, capture will assign one
 		const request = await captureAnthropicRequest(model, createContext(), {
 			sessionId: "fireworks-session-1",
 		});
 
+		expect(request.headers["session-id"]).toBe("fireworks-session-1");
 		expect(request.headers["x-session-affinity"]).toBe("fireworks-session-1");
 	});
 
-	it("omits x-session-affinity header for native Anthropic models", async () => {
+	it("omits session-affinity headers for native Anthropic models", async () => {
 		const model = createAnthropicModel();
 		const request = await captureAnthropicRequest(model, createContext(), {
 			sessionId: "anthropic-session-1",
 		});
 
+		expect(request.headers["session-id"]).toBeUndefined();
 		expect(request.headers["x-session-affinity"]).toBeUndefined();
 	});
 
-	it("omits x-session-affinity header when cacheRetention is none", async () => {
+	it("omits session-affinity headers when cacheRetention is none", async () => {
 		const model = createFireworksModel();
 		const request = await captureAnthropicRequest(model, createContext(), {
 			sessionId: "fireworks-session-2",
 			cacheRetention: "none",
 		});
 
+		expect(request.headers["session-id"]).toBeUndefined();
 		expect(request.headers["x-session-affinity"]).toBeUndefined();
 	});
 

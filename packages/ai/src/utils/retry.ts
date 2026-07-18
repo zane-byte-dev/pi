@@ -85,6 +85,15 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 
 	// gRPC based providers (e.g. NVIDIA NIM)
 	"ResourceExhausted",
+
+	// AWS Bedrock SCP / IAM authorization denials. Bedrock API keys can hit an
+	// explicit deny in an AWS Organizations service control policy for a given
+	// inference profile; retrying lets a higher-level policy (model/region
+	// failover) recover instead of failing the turn outright.
+	"AccessDeniedException",
+	"not authorized to perform",
+	"explicit deny",
+	"service control policy",
 ]);
 
 /**
